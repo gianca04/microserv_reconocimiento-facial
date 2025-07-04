@@ -25,8 +25,10 @@ RUN apt-get update && apt-get upgrade -y && \
     python3-dev \
     python3-numpy \
     software-properties-common \
-    zip && \
-    apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+    zip \
+    libopencv-dev \
+    python3-opencv \
+    && rm -rf /var/lib/apt/lists/*
 
 # =====================
 # 2. Instalar Dlib

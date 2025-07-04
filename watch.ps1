@@ -1,6 +1,6 @@
 # watch.ps1
 $containerName = "facerec_dev"
-$scriptToRun = "python3 /root/app/facerec_service.py"
+$scriptToRun = "python3 /root/app/main.py"
 
 # Si el contenedor ya existe, lo borra
 if (docker ps -a --format "{{.Names}}" | Select-String -Pattern "^$containerName$") {
