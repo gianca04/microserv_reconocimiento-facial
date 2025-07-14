@@ -45,12 +45,14 @@ RUN pip3 install --no-cache-dir \
     flask-cors \
     face_recognition \
     requests \
-    python-dotenv
+    python-dotenv \
+    opencv-python \
+    werkzeug
 
 # =====================
 # 4. Copiar microservicio
 # =====================
-COPY facerec_service.py /root/facerec_service.py
+COPY main.py /root/main.py
 
 # =====================
 # 5. Crear carpeta persistente para rostros
@@ -60,4 +62,4 @@ RUN mkdir -p /root/faces
 # =====================
 # 6. Iniciar servicio
 # =====================
-CMD ["python3", "/root/facerec_service.py"]
+CMD ["python3", "/root/main.py"]
