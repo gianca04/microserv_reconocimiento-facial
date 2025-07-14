@@ -1,17 +1,28 @@
-from os import listdir, remove
-from os.path import isfile, join, splitext
 import os
-import requests
-import face_recognition
 from datetime import datetime
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 from werkzeug.exceptions import BadRequest
 from dotenv import load_dotenv
 import logging
-import threading
-import cv2
-import time
+
+# Importar utilidades locales
+from face_utils import (
+    is_picture, 
+    calc_face_encoding, 
+    get_faces_dict, 
+    extract_image, 
+    detect_faces_only, 
+    detect_faces_in_image
+)
+from laravel_utils import (
+    get_faces_from_laravel, 
+    reportar_asistencias
+)
+from stream_utils import (
+    start_stream_processing
+)
+from salon_manager import SalonManager
 
 # === Configuración inicial ===
 
@@ -48,154 +59,19 @@ logger.addHandler(console_handler)
 app = Flask(__name__)
 CORS(app)
 
+# Inicializar SalonManager
+salon_manager = SalonManager(
+    laravel_api_url=LARAVEL_API_URL,
+    recognition_threshold=RECOGNITION_THRESHOLD
+)
+
+# Iniciar auto-sincronización con Laravel para obtener cámaras activas
+salon_manager.iniciar_auto_sincronizacion()
+
 # === Variables ===
 
 faces_dict = {}  # (No usado si se consulta desde Laravel)
 persistent_faces = "/root/faces"
-
-# === Utilidades ===
-
-
-def is_picture(filename):
-    image_extensions = {"png", "jpg", "jpeg", "gif"}
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in image_extensions
-
-
-def get_all_picture_files(path):
-    return [
-        join(path, f) for f in listdir(path) if isfile(join(path, f)) and is_picture(f)
-    ]
-
-
-def remove_file_ext(filename):
-    return splitext(filename.rsplit("/", 1)[-1])[0]
-
-
-def calc_face_encoding(image):
-    loaded_image = face_recognition.load_image_file(image)
-    faces = face_recognition.face_encodings(loaded_image)
-    if len(faces) > 1:
-        raise Exception("Found more than one face in the image.")
-    if not faces:
-        raise Exception("No face found in the image.")
-    return faces[0]
-
-
-def get_faces_dict(path):
-    image_files = get_all_picture_files(path)
-    return dict(
-        [(remove_file_ext(image), calc_face_encoding(image)) for image in image_files]
-    )
-
-
-def extract_image(request):
-    if "file" not in request.files:
-        raise BadRequest("Missing file parameter!")
-    file = request.files["file"]
-    if file.filename == "":
-        raise BadRequest("File is empty or invalid")
-    return file
-
-
-def detect_faces_only(file_stream):
-    """
-    Detecta únicamente si existen rostros en una imagen sin hacer comparaciones.
-    
-    Args:
-        file_stream: Archivo de imagen (puede ser un objeto file de Flask o ruta)
-    
-    Returns:
-        dict: {
-            "faces_detected": int,     // Número de rostros encontrados
-            "has_faces": bool,         // True si hay al menos un rostro
-            "face_locations": list     // Coordenadas de cada rostro encontrado
-        }
-    
-    Raises:
-        Exception: Si hay error al procesar la imagen
-    """
-    try:
-        # Cargar la imagen
-        img = face_recognition.load_image_file(file_stream)
-        
-        # Detectar ubicaciones de rostros (más rápido que calcular encodings)
-        face_locations = face_recognition.face_locations(img)
-        
-        # Contar rostros detectados
-        faces_count = len(face_locations)
-        
-        logging.info(f"Detección simple: {faces_count} rostro(s) encontrado(s)")
-        
-        return {
-            "faces_detected": faces_count,
-            "has_faces": faces_count > 0,
-            "face_locations": face_locations
-        }
-        
-    except Exception as e:
-        logging.error(f"Error en detección de rostros: {str(e)}")
-        raise Exception(f"Error processing image: {str(e)}")
-
-
-# === Llamadas a Laravel ===
-
-
-def get_faces_from_laravel(matricula_id):
-    url = f"{LARAVEL_API_URL}/api/biometricos/matricula/{matricula_id}"
-    logging.info(f"Solicitando rostros para matrícula ID {matricula_id}")
-    response = requests.get(url)
-    response.raise_for_status()
-    return response.json()["rostros"]
-
-
-def reportar_asistencias(matricula_id, rostros_detectados, timestamp):
-    url = f"{LARAVEL_API_URL}/api/asistencias/registro-masivo"
-    data = {
-        "matricula_id": matricula_id,
-        "rostros_detectados": rostros_detectados,
-        "captura": timestamp,
-    }
-    logging.info(f"Enviando asistencias detectadas: {data}")
-    try:
-        response = requests.post(url, json=data)
-        response.raise_for_status()
-        logging.info("✔ Asistencias registradas correctamente.")
-        return True
-    except Exception as e:
-        logging.error(f"❌ Error al registrar asistencias: {str(e)}")
-        return False
-
-
-# === Lógica de reconocimiento ===
-
-
-def detect_faces_in_image(file_stream, rostros_a_comparar):
-    img = face_recognition.load_image_file(file_stream)
-    uploaded_faces = face_recognition.face_encodings(img)
-
-    logging.info(f"{len(uploaded_faces)} rostro(s) detectado(s) en imagen recibida.")
-
-    rostros_detectados = []
-
-    if uploaded_faces:
-        for uploaded_face in uploaded_faces:
-            for rostro in rostros_a_comparar:
-                known_encoding = rostro["encoding"]
-                match = face_recognition.compare_faces(
-                    [known_encoding], uploaded_face, tolerance=RECOGNITION_THRESHOLD
-                )[0]
-
-                if match:
-                    distancia = face_recognition.face_distance(
-                        [known_encoding], uploaded_face
-                    )[0]
-                    rostros_detectados.append(
-                        {"id": rostro["id"], "dist": float(distancia)}
-                    )
-
-    logging.info(f"{len(rostros_detectados)} coincidencias encontradas.")
-    return {"count": len(uploaded_faces), "faces": rostros_detectados}
-
 
 # === Endpoints ===
 
@@ -249,13 +125,13 @@ def web_recognize():
 
     if file and is_picture(file.filename):
         logging.info(f"Inicio de proceso para matrícula {matricula_id}")
-        rostros = get_faces_from_laravel(matricula_id)
-        resultado = detect_faces_in_image(file, rostros)
+        rostros = get_faces_from_laravel(matricula_id, LARAVEL_API_URL)
+        resultado = detect_faces_in_image(file, rostros, RECOGNITION_THRESHOLD)
 
         timestamp = datetime.now().isoformat()
 
         if resultado["faces"]:
-            enviado = reportar_asistencias(matricula_id, resultado["faces"], timestamp)
+            enviado = reportar_asistencias(matricula_id, resultado["faces"], timestamp, LARAVEL_API_URL)
             resultado["asistencia_reportada"] = enviado
         else:
             resultado["asistencia_reportada"] = False
@@ -459,6 +335,8 @@ def web_faces():
 
     elif request.method == "DELETE":
         faces_dict.pop(request.args.get("id"))
+        # Importar remove aquí para evitar conflicto con imports
+        from os import remove
         remove(f"{persistent_faces}/{request.args.get('id')}.jpg")
 
     return jsonify(list(faces_dict.keys()))
@@ -498,45 +376,364 @@ def health_check():
     )
 
 
-# === Configuración de Stream ===
-def process_stream():
+@app.route("/salones", methods=["GET", "POST", "DELETE"])
+def gestionar_salones():
     """
-    Procesa el stream para detectar rostros cada segundo.
+    Endpoint para gestionar salones (matrícula + stream).
+    
+    ⚠️ NOTA IMPORTANTE: 
+    Este sistema ahora se AUTO-CONFIGURA obteniendo las cámaras activas desde Laravel.
+    El registro manual sigue disponible pero se recomienda usar la auto-sincronización.
+    
+    Métodos soportados: GET, POST, DELETE
+    URL: /salones
+    
+    === GET /salones ===
+    Obtiene la lista de salones registrados y monitoreando.
+    
+    Respuesta (200):
+    {
+        "salones_activos": [
+            {
+                "matricula_id": "2",
+                "codigo_matricula": "20256A",
+                "monitoreando": true
+            }
+        ],
+        "total": 1,
+        "auto_configurado": true,
+        "mensaje": "Salones auto-configurados desde Laravel"
+    }
+    
+    Ejemplo:
+    curl -X GET "http://localhost:8080/salones"
+    
+    === POST /salones ===
+    Registra manualmente un nuevo salón (NO RECOMENDADO - usar auto-sync).
+    
+    Body JSON requerido:
+    {
+        "matricula_id": "salon_101",           // ID único del salón
+        "stream_url": "http://192.168.1.100:81/stream",  // URL del stream ESP32
+        "codigo_matricula": "20256A"          // Código legible (opcional)
+    }
+    
+    IMPORTANTE: Los salones registrados manualmente pueden ser sobrescritos
+    por la auto-sincronización si no están en Laravel.
+    
+    === DELETE /salones ===
+    Desregistra un salón manualmente (NO RECOMENDADO - usar Laravel).
     """
-    cap = cv2.VideoCapture(STREAM_URL)
+    global salon_manager
+    
+    if request.method == "GET":
+        salones_activos = salon_manager.obtener_salones_activos()
+        salones_info = []
+        
+        for matricula_id in salones_activos:
+            estado = salon_manager.obtener_estado_salon(matricula_id)
+            if estado:
+                salones_info.append({
+                    "matricula_id": estado["matricula_id"],
+                    "codigo_matricula": estado["codigo_matricula"],
+                    "monitoreando": estado["monitoreando"]
+                })
+        
+        return jsonify({
+            "salones_activos": salones_info,
+            "total": len(salones_info),
+            "auto_configurado": salon_manager.auto_sync_active,
+            "mensaje": "Salones auto-configurados desde Laravel" if salon_manager.auto_sync_active else "Configuración manual"
+        })
+    
+    # Para POST y DELETE necesitamos JSON
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "JSON body required"}), 400
+    
+    if request.method == "POST":
+        # Validar campos requeridos
+        if "matricula_id" not in data or "stream_url" not in data:
+            return jsonify({"error": "Missing required fields: matricula_id, stream_url"}), 400
+        
+        matricula_id = data["matricula_id"]
+        stream_url = data["stream_url"]
+        codigo_matricula = data.get("codigo_matricula")
+        
+        # Advertencia sobre uso manual
+        logging.warning(f"⚠️ Registro manual de salón {matricula_id}. Se recomienda usar auto-sincronización.")
+        
+        # Registrar salón
+        if salon_manager.registrar_salon(matricula_id, stream_url, codigo_matricula):
+            return jsonify({
+                "success": True,
+                "message": f"Salón {matricula_id} registrado manualmente",
+                "matricula_id": matricula_id,
+                "advertencia": "Este salón puede ser sobrescrito por auto-sincronización"
+            })
+        else:
+            return jsonify({"error": "Error registrando salón o salón ya existe"}), 400
+    
+    elif request.method == "DELETE":
+        # Validar campo requerido
+        if "matricula_id" not in data:
+            return jsonify({"error": "Missing required field: matricula_id"}), 400
+        
+        matricula_id = data["matricula_id"]
+        
+        # Advertencia sobre uso manual
+        logging.warning(f"⚠️ Desregistro manual de salón {matricula_id}. Se recomienda desactivar en Laravel.")
+        
+        # Desregistrar salón
+        if salon_manager.desregistrar_salon(matricula_id):
+            return jsonify({
+                "success": True,
+                "message": f"Salón {matricula_id} desregistrado manualmente",
+                "advertencia": "El salón puede reaparecer en la próxima sincronización si está activo en Laravel"
+            })
+        else:
+            return jsonify({"error": "Salón no encontrado"}), 404
 
-    if not cap.isOpened():
-        logging.error("No se pudo abrir el stream en %s", STREAM_URL)
-        return
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            logging.error("Error al leer frame del stream")
-            break
+@app.route("/salones/<matricula_id>/estado", methods=["GET"])
+def obtener_estado_salon(matricula_id):
+    """
+    Obtiene el estado detallado de un salón específico.
+    
+    Método: GET
+    URL: /salones/<matricula_id>/estado
+    
+    Parámetros:
+    - matricula_id (path parameter): ID de la matrícula del salón
+    
+    Respuesta exitosa (200):
+    {
+        "matricula_id": "salon_101",
+        "stream_url": "http://192.168.1.100:81/stream",
+        "rostros_cargados": 25,                    // Cantidad de rostros en cache
+        "ultimo_cache": "2025-07-13T10:30:00",     // Última actualización del cache
+        "monitoreando": true,                      // Si está monitoreando activamente
+        "detecciones_hoy": 12,                     // Detecciones realizadas hoy
+        "ultima_deteccion": "2025-07-13T11:45:00"  // Última detección exitosa
+    }
+    
+    Error (404):
+    {
+        "error": "Salón no encontrado"
+    }
+    
+    Ejemplo:
+    curl -X GET "http://localhost:8080/salones/salon_101/estado"
+    
+    Uso típico:
+    - Monitoreo del estado de un salón específico
+    - Verificar si el cache de rostros está actualizado
+    - Estadísticas de detecciones
+    """
+    global salon_manager
+    
+    estado = salon_manager.obtener_estado_salon(matricula_id)
+    if estado:
+        return jsonify(estado)
+    else:
+        return jsonify({"error": "Salón no encontrado"}), 404
 
-        try:
-            # Convertir frame a formato compatible con face_recognition
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-            # Detectar rostros en el frame
-            face_locations = face_recognition.face_locations(rgb_frame)
-            faces_count = len(face_locations)
+@app.route("/salones/<matricula_id>/refrescar", methods=["POST"])
+def refrescar_rostros_salon(matricula_id):
+    """
+    Refresca manualmente los rostros de un salón desde Laravel.
+    
+    Método: POST
+    URL: /salones/<matricula_id>/refrescar
+    
+    Parámetros:
+    - matricula_id (path parameter): ID de la matrícula del salón
+    
+    Proceso:
+    1. Realiza una nueva consulta a Laravel para obtener rostros actualizados
+    2. Actualiza el cache interno del salón
+    3. Continúa el monitoreo con los rostros refrescados
+    
+    Respuesta exitosa (200):
+    {
+        "success": true,
+        "message": "Rostros refrescados correctamente",
+        "matricula_id": "salon_101"
+    }
+    
+    Errores:
+    - 404: Salón no encontrado
+    - 500: Error al conectar con Laravel
+    
+    Ejemplo:
+    curl -X POST "http://localhost:8080/salones/salon_101/refrescar"
+    
+    Uso típico:
+    - Forzar actualización cuando se agreguen nuevos estudiantes
+    - Resolver problemas de cache desactualizado
+    - Sincronizar cambios inmediatos desde Laravel
+    """
+    global salon_manager
+    
+    if salon_manager.refrescar_rostros_salon(matricula_id):
+        return jsonify({
+            "success": True,
+            "message": "Rostros refrescados correctamente",
+            "matricula_id": matricula_id
+        })
+    else:
+        return jsonify({"error": "Salón no encontrado o error refrescando"}), 404
 
-            if faces_count > 0:
-                logging.info(f"Detectados {faces_count} rostro(s) en el stream")
 
-        except Exception as e:
-            logging.error(f"Error procesando frame: {str(e)}")
+@app.route("/sistema/sincronizar", methods=["POST"])
+def sincronizar_sistema():
+    """
+    Fuerza una sincronización inmediata con Laravel para obtener cámaras activas.
+    
+    Método: POST
+    URL: /sistema/sincronizar
+    
+    Proceso:
+    1. Consulta el endpoint /api/camaras/activas en Laravel
+    2. Compara con salones actuales del microservicio
+    3. Registra nuevas cámaras automáticamente
+    4. Desregistra cámaras que ya no están activas
+    5. Actualiza URLs de stream si cambiaron
+    
+    Respuesta exitosa (200):
+    {
+        "success": true,
+        "message": "Sincronización completada",
+        "salones_activos": ["2", "5", "8"],
+        "total": 3,
+        "cambios": {
+            "nuevos": ["2"],
+            "eliminados": ["1"], 
+            "actualizados": ["5"]
+        }
+    }
+    
+    Error (500):
+    {
+        "error": "Error conectando con Laravel",
+        "details": "Connection timeout"
+    }
+    
+    Ejemplo:
+    curl -X POST "http://localhost:8080/sistema/sincronizar"
+    
+    Uso típico:
+    - Después de agregar/quitar cámaras en Laravel
+    - Para resolver problemas de sincronización
+    - Verificación manual del estado
+    
+    Nota:
+    La sincronización también ocurre automáticamente cada 5 minutos.
+    """
+    global salon_manager
+    
+    try:
+        # Obtener estado anterior
+        salones_antes = set(salon_manager.obtener_salones_activos())
+        
+        # Realizar sincronización
+        exito = salon_manager.sincronizar_con_laravel()
+        
+        if exito:
+            # Obtener estado posterior
+            salones_despues = set(salon_manager.obtener_salones_activos())
+            
+            # Calcular cambios
+            nuevos = salones_despues - salones_antes
+            eliminados = salones_antes - salones_despues
+            # Para detectar actualizados necesitaríamos más lógica, por simplicidad lo omitimos
+            
+            return jsonify({
+                "success": True,
+                "message": "Sincronización completada",
+                "salones_activos": list(salones_despues),
+                "total": len(salones_despues),
+                "cambios": {
+                    "nuevos": list(nuevos),
+                    "eliminados": list(eliminados),
+                    "actualizados": []  # Por implementar si es necesario
+                }
+            })
+        else:
+            return jsonify({
+                "error": "Error en sincronización con Laravel"
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"Error en sincronización manual: {str(e)}")
+        return jsonify({
+            "error": "Error interno en sincronización",
+            "details": str(e)
+        }), 500
 
-        # Esperar 1 segundo antes de procesar el siguiente frame
-        time.sleep(1)
 
-    cap.release()
+@app.route("/sistema/estado", methods=["GET"])
+def estado_sistema():
+    """
+    Obtiene el estado general del sistema de reconocimiento facial.
+    
+    Método: GET
+    URL: /sistema/estado
+    
+    Respuesta (200):
+    {
+        "auto_sync_activo": true,
+        "salones_totales": 3,
+        "salones_monitoreando": 2,
+        "salones": [
+            {
+                "matricula_id": "2",
+                "codigo_matricula": "20256A",
+                "stream_url": "http://192.168.1.7:81/stream",
+                "rostros_cargados": 15,
+                "monitoreando": true,
+                "detecciones_hoy": 5
+            }
+        ],
+        "ultima_sincronizacion": "2025-07-14T10:30:00",
+        "version": "2.0.0"
+    }
+    
+    Ejemplo:
+    curl -X GET "http://localhost:8080/sistema/estado"
+    
+    Uso típico:
+    - Dashboard de monitoreo
+    - Verificación del estado general
+    - Debugging y diagnóstico
+    """
+    global salon_manager
+    
+    salones_info = []
+    salones_monitoreando = 0
+    
+    for matricula_id in salon_manager.obtener_salones_activos():
+        estado = salon_manager.obtener_estado_salon(matricula_id)
+        if estado:
+            salones_info.append(estado)
+            if estado.get("monitoreando", False):
+                salones_monitoreando += 1
+    
+    return jsonify({
+        "auto_sync_activo": salon_manager.auto_sync_active,
+        "salones_totales": len(salones_info),
+        "salones_monitoreando": salones_monitoreando,
+        "salones": salones_info,
+        "version": "2.0.0-auto-sync"
+    })
 
-# Iniciar el hilo para procesar el stream
-stream_thread = threading.Thread(target=process_stream, daemon=True)
-stream_thread.start()
+
+# === Inicialización del Stream ===
+# NOTA: Ya no se inicia un stream único aquí.
+# Ahora cada salón maneja su propio stream a través del SalonManager.
+# Para usar el sistema anterior de stream único, descomenta las siguientes líneas:
+# stream_thread = start_stream_processing(STREAM_URL)
 
 
 # === Main ===

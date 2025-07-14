@@ -1,57 +1,300 @@
-# Documentación API - Microservicio de Reconocimiento Facial
+# Microservicio de Reconocimiento Facial
 
-## Descripción General
+Sistema completo de reconocimiento facial para gestión de asistencias con soporte para **múltiples salones** y **monitoreo automático de streams**.
 
-Este microservicio proporciona funcionalidades de reconocimiento facial utilizando la librería `face_recognition`. Está diseñado para integrarse con un sistema Laravel y permite detectar rostros en imágenes, compararlos con una base de datos de rostros conocidos, y registrar asistencias automáticamente.
+## 🚀 Características Principales
 
-## Configuración
+### ✨ Sistema de Salones (Nuevo)
+- **Múltiples salones simultáneos**: Cada salón tiene su propio stream ESP32
+- **Monitoreo automático 24/7**: Detección continua sin intervención manual  
+- **Cache inteligente**: Los rostros se actualizan automáticamente cada 30 minutos
+- **Gestión centralizada**: API REST para administrar todos los salones
+- **Estadísticas en tiempo real**: Conteo de detecciones por salón
 
-### Variables de Entorno (.env)
+### 🎯 Reconocimiento Facial Avanzado
+- **Detección múltiple**: Puede detectar varios rostros simultáneamente
+- **Alta precisión**: Umbral de reconocimiento configurable
+- **Reporte automático**: Asistencias se envían automáticamente a Laravel
 
-```env
-LARAVEL_API_URL=http://localhost:8000        # URL del backend Laravel
-MATCH_TOLERANCE=0.6                          # Umbral de reconocimiento (0.0-1.0)
-LOG_FILE=reconocimiento.log                  # Archivo de logs
+### 🔗 Integración con Laravel
+- **Consulta automática**: Obtiene rostros registrados por matrícula
+- **Sincronización**: Cache se actualiza automáticamente
+- **Reporte de asistencias**: Envío automático de detecciones
+
+## 📋 Arquitectura del Sistema
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   ESP32-CAM     │    │   Microservicio  │    │   Laravel API   │
+│   (Salón 101)   │───▶│   Reconocimiento │◀──▶│   (Rostros +    │
+└─────────────────┘    │     Facial       │    │   Asistencias)  │
+                       │                  │    └─────────────────┘
+┌─────────────────┐    │  ┌─────────────┐ │
+│   ESP32-CAM     │───▶│  │ SalonManager│ │
+│   (Salón 102)   │    │  │   - Cache   │ │
+└─────────────────┘    │  │   - Monitor │ │
+                       │  │   - Compare │ │
+┌─────────────────┐    │  └─────────────┘ │
+│   ESP32-CAM     │───▶│                  │
+│   (Salón 103)   │    └──────────────────┘
+└─────────────────┘
 ```
 
-### Puerto del Servicio
-- **Puerto por defecto**: 8080
-- **Host**: 0.0.0.0 (acepta conexiones externas)
+## 🛠️ Instalación
 
-## Endpoints
+### 1. Clonar el repositorio
+```bash
+git clone <repo-url>
+cd microserv_reconocimiento-facial
+```
 
-### 1. POST / - Reconocimiento Facial y Registro de Asistencias
+### 2. Instalar dependencias
+```bash
+pip install -r requirements.txt
+```
 
-**Descripción**: Endpoint principal que procesa una imagen, detecta rostros, los compara con rostros registrados en Laravel y registra asistencias automáticamente.
+### 3. Configurar variables de entorno
+```bash
+cp .env.example .env
+# Editar .env con tu configuración
+```
 
-**URL**: `POST /`
+### 4. Ejecutar el microservicio
+```bash
+python main.py
+```
 
-**Parámetros**:
-- `matricula_id` (query parameter, requerido): ID de la matrícula para obtener rostros registrados
-- `file` (form-data, requerido): Imagen a procesar (PNG, JPG, JPEG, GIF)
+El servicio estará disponible en `http://localhost:8080`
 
-**Flujo de procesamiento**:
-1. Extrae imagen del request
-2. Consulta rostros registrados en Laravel para la matrícula
-3. Detecta rostros en la imagen subida
-4. Compara cada rostro detectado con los rostros conocidos
-5. Si encuentra coincidencias, registra asistencias en Laravel
+## 📡 API Endpoints
 
-**Respuesta exitosa (200)**:
-```json
+### Gestión de Salones
+
+#### Registrar un salón
+```bash
+POST /salones
+Content-Type: application/json
+
 {
-    "count": 2,
-    "faces": [
-        {
-            "id": 123,
-            "dist": 0.45
-        },
-        {
-            "id": 124,
-            "dist": 0.52
-        }
-    ],
-    "asistencia_reportada": true,
+  "matricula_id": "salon_101",
+  "stream_url": "http://192.168.1.100:81/stream"
+}
+```
+
+#### Listar salones activos
+```bash
+GET /salones
+
+# Respuesta:
+{
+  "salones_activos": ["salon_101", "salon_102"],
+  "total": 2
+}
+```
+
+#### Estado detallado de un salón
+```bash
+GET /salones/salon_101/estado
+
+# Respuesta:
+{
+  "matricula_id": "salon_101",
+  "stream_url": "http://192.168.1.100:81/stream",
+  "rostros_cargados": 25,
+  "ultimo_cache": "2025-07-13T10:30:00",
+  "monitoreando": true,
+  "detecciones_hoy": 12,
+  "ultima_deteccion": "2025-07-13T11:45:00"
+}
+```
+
+#### Refrescar rostros desde Laravel
+```bash
+POST /salones/salon_101/refrescar
+```
+
+#### Desregistrar un salón
+```bash
+DELETE /salones
+Content-Type: application/json
+
+{
+  "matricula_id": "salon_101"
+}
+```
+
+### Endpoints Legacy (Reconocimiento Manual)
+
+#### Reconocimiento con imagen
+```bash
+POST /?matricula_id=salon_101
+Content-Type: multipart/form-data
+file: imagen.jpg
+```
+
+#### Detectar rostros
+```bash
+POST /detect
+Content-Type: multipart/form-data
+file: imagen.jpg
+```
+
+#### Obtener codificación facial
+```bash
+POST /encoding
+Content-Type: multipart/form-data
+file: rostro.jpg
+```
+
+#### Health check
+```bash
+GET /status
+```
+
+## 🏗️ Configuración de ESP32
+
+Para cada ESP32-CAM, asegúrate de que transmita correctamente:
+
+```cpp
+// El stream debe ser accesible en:
+// http://IP_ESP32:81/stream
+
+// Configuración típica:
+// - Puerto 81 para stream
+// - Formato MJPEG
+// - Resolución recomendada: 640x480 o 800x600
+```
+
+## 📝 Guía de Uso Rápido
+
+### 1. Configurar un salón completo
+
+```bash
+# 1. Iniciar el microservicio
+python main.py
+
+# 2. Registrar el salón (esto inicia el monitoreo automático)
+curl -X POST "http://localhost:8080/salones" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "matricula_id": "1A_primaria", 
+       "stream_url": "http://192.168.1.100:81/stream"
+     }'
+
+# 3. Verificar que funciona
+curl -X GET "http://localhost:8080/salones/1A_primaria/estado"
+
+# ¡Listo! El sistema ahora:
+# - Monitorea el stream automáticamente
+# - Detecta estudiantes en tiempo real
+# - Registra asistencias en Laravel
+```
+
+### 2. Gestionar múltiples salones
+
+```bash
+# Registrar varios salones
+for i in {101..105}; do
+  curl -X POST "http://localhost:8080/salones" \
+       -H "Content-Type: application/json" \
+       -d "{
+         \"matricula_id\": \"salon_$i\",
+         \"stream_url\": \"http://192.168.1.$i:81/stream\"
+       }"
+done
+
+# Ver todos los salones
+curl -X GET "http://localhost:8080/salones"
+```
+
+## 🧪 Pruebas
+
+Ejecutar el script de pruebas integrado:
+
+```bash
+python test_salones.py
+```
+
+Este script probará:
+- Conexión al servicio
+- Registro de salones
+- Estados y estadísticas
+- Desregistro
+
+## 📊 Monitoreo y Logs
+
+### Ver logs en tiempo real
+```bash
+tail -f reconocimiento.log
+```
+
+### Logs típicos durante operación normal
+```
+2025-07-13 10:30:15 [INFO] SalonManager inicializado
+2025-07-13 10:30:16 [INFO] Cargando rostros para matrícula salon_101
+2025-07-13 10:30:17 [INFO] ✔ 25 rostros cargados para matrícula salon_101
+2025-07-13 10:30:18 [INFO] ✔ Monitoreo iniciado para matrícula salon_101
+2025-07-13 10:30:45 [INFO] 👤 2 rostro(s) detectado(s) en matrícula salon_101
+2025-07-13 10:30:46 [INFO] 🎯 1 rostro(s) reconocido(s) en matrícula salon_101
+2025-07-13 10:30:47 [INFO] ✅ Asistencias reportadas para matrícula salon_101
+```
+
+## 🔧 Troubleshooting
+
+### Problema: No se conecta al stream ESP32
+```bash
+# Verificar conectividad directa
+curl -I http://192.168.1.100:81/stream
+
+# Si no responde:
+# 1. Verificar que el ESP32 esté encendido
+# 2. Comprobar la red (ping 192.168.1.100)
+# 3. Verificar configuración del ESP32
+```
+
+### Problema: No se cargan rostros desde Laravel
+```bash
+# Probar conexión directa a Laravel
+curl http://tu-laravel.com/api/biometricos/matricula/salon_101
+
+# Si falla:
+# 1. Verificar LARAVEL_API_URL en .env
+# 2. Comprobar que la matrícula existe en Laravel
+# 3. Verificar que hay rostros registrados
+```
+
+### Problema: Salón no detecta rostros
+```bash
+# 1. Verificar estado del salón
+curl -X GET "http://localhost:8080/salones/salon_101/estado"
+
+# 2. Refrescar rostros manualmente
+curl -X POST "http://localhost:8080/salones/salon_101/refrescar"
+
+# 3. Ajustar umbral de reconocimiento en .env
+MATCH_TOLERANCE=0.7  # Más permisivo
+```
+
+## 🔄 Migración desde Sistema Legacy
+
+Si ya tenías el sistema anterior funcionando:
+
+1. **Backup**: Guarda tu configuración actual
+2. **Actualizar**: Actualiza el código con los nuevos archivos
+3. **Configurar**: Usa los nuevos endpoints `/salones` en lugar del sistema anterior
+4. **Beneficios**: Obtienes monitoreo automático y gestión de múltiples salones
+
+El sistema legacy sigue funcionando para compatibilidad, pero se recomienda migrar al nuevo sistema de salones.
+
+## 📝 Documentación Adicional
+
+- [Guía Detallada de Salones](GUIA_SALONES.md)
+- [Archivo de configuración ejemplo](.env.example)
+- [Script de pruebas](test_salones.py)
+
+---
+
+**¿Necesitas ayuda?** Revisa los logs, ejecuta las pruebas, y verifica la conectividad de red y Laravel.
     "timestamp": "2025-07-03T10:30:00.123456"
 }
 ```
