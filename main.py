@@ -739,12 +739,23 @@ def estado_sistema():
 # === Main ===
 
 if __name__ == "__main__":
-    logging.info("Iniciando microservicio de reconocimiento facial")
+    logging.info("🚀 DEPURACIÓN: =====================================")
+    logging.info("🚀 DEPURACIÓN: INICIANDO MICROSERVICIO DE RECONOCIMIENTO FACIAL")
+    logging.info("🚀 DEPURACIÓN: =====================================")
+    logging.info(f"🌐 DEPURACIÓN: Laravel API URL: {LARAVEL_API_URL}")
+    logging.info(f"🎯 DEPURACIÓN: Umbral de reconocimiento: {RECOGNITION_THRESHOLD}")
+    logging.info(f"📝 DEPURACIÓN: Archivo de log: {LOG_FILE_PATH}")
+    
     try:
         faces_dict = get_faces_dict(persistent_faces)
+        logging.info(f"📁 DEPURACIÓN: Rostros locales cargados: {len(faces_dict)}")
     except Exception as e:
-        logging.warning(f"No se pudieron cargar rostros persistentes: {e}")
+        logging.warning(f"⚠️ DEPURACIÓN: No se pudieron cargar rostros persistentes: {e}")
         faces_dict = {}
 
-    logging.info("Servidor iniciado en puerto 8080")
+    logging.info("🌐 DEPURACIÓN: Iniciando servidor Flask en puerto 8080")
+    logging.info("✅ DEPURACIÓN: Microservicio listo para recibir conexiones")
+    logging.info("🔄 DEPURACIÓN: Auto-sincronización con Laravel iniciada")
+    logging.info("👁️ DEPURACIÓN: Modo SOLO DETECCIÓN activado (sin comparaciones)")
+    
     app.run(host="0.0.0.0", port=8080, debug=True, use_reloader=True)
